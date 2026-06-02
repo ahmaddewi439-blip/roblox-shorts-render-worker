@@ -3,10 +3,10 @@ name: Render Roblox Shorts Video
 on:
   workflow_dispatch:
     inputs:
-      gameplay_url:
-        description: "Google Drive gameplay video URL"
+      gameplay_urls:
+        description: "JSON array of Google Drive gameplay video URLs"
         required: true
-        default: ""
+        default: "[]"
 
 permissions:
   contents: write
@@ -31,22 +31,42 @@ jobs:
           mkdir -p input
           mkdir -p output
 
-      - name: Download gameplay from Google Drive
+      - name: Pick one gameplay URL
         env:
-          GAMEPLAY_URL: ${{ github.event.inputs.gameplay_url }}
+          GAMEPLAY_URLS: ${{ github.event.inputs.gameplay_urls }}
+        run: |
+          echo "Received gameplay URLs:"
+          echo "$GAMEPLAY_URLS"
+
+          SELECTED_GAMEPLAY_URL=$(python3 -c 'import os, json, random; urls=json.loads(os.environ["GAMEPLAY_URLS"]); urls=[u.strip() for u in urls if str(u).strip()]; print(random.choice(urls))')
+          echo "Selected gameplay URL: $SELECTED_GAMEPLAY_URL"
+          echo "SELECTED_GAMEPLAY_URL=$SELECTED_GAMEPLAY_URL" >> $GITHUB_ENV
+
+      - name: Download gameplay from Google Drive
         run: |
           echo "Downloading gameplay..."
-          echo "$GAMEPLAY_URL"
+          echo "$SELECTED_GAMEPLAY_URL"
 
-          FILE_ID=$(python3 -c 'import os, re; url=os.environ["GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
+          FILE_ID=$(python3 -c 'import os, re; url=os.environ["SELECTED_GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
           echo "Google Drive File ID: $FILE_ID"
 
           gdown "https://drive.google.com/uc?id=$FILE_ID" -O input/gameplay.mp4
           ls -lh input/gameplay.mp4
 
+      - name: Pick random cut start
+        run: |
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 input/gameplay.mp4)
+          echo "Gameplay duration: $DURATION"
+
+          START=$(DURATION="$DURATION" python3 -c 'import random, os; duration=float(os.environ["DURATION"]); target=50.0; max_start=max(0.0, duration-target-1); print(round(random.uniform(0, max_start), 2))')
+
+          echo "RANDOM_START=$START" >> $GITHUB_ENV
+          echo "Random start: $START"
+
       - name: Render gameplay to 9x16
         run: |
           ffmpeg -y \
+            -ss "$RANDOM_START" \
             -i input/gameplay.mp4 \
             -t 50 \
             -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.04:saturation=1.12[bg];[0:v]scale=1000:1780:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]" \
