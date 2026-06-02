@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       gameplay_urls:
-        description: "JSON array of Google Drive gameplay video URLs"
+        description: "Paste 1 Google Drive gameplay URL or JSON array of URLs"
         required: true
-        default: "[]"
+        default: ""
 
 permissions:
   contents: write
@@ -31,24 +31,14 @@ jobs:
           mkdir -p input
           mkdir -p output
 
-           - name: Pick one gameplay URL
+      - name: Pick one gameplay URL
         env:
           GAMEPLAY_URLS: ${{ github.event.inputs.gameplay_urls }}
         run: |
           echo "Received gameplay URLs:"
           echo "$GAMEPLAY_URLS"
 
-          SELECTED_GAMEPLAY_URL=$(python3 -c 'import os, json, random; raw=os.environ["GAMEPLAY_URLS"].strip(); 
-try:
-    urls=json.loads(raw)
-    if isinstance(urls, str):
-        urls=[urls]
-except Exception:
-    urls=[raw]
-urls=[str(u).strip() for u in urls if str(u).strip()]
-if not urls:
-    raise SystemExit("No gameplay URL provided")
-print(random.choice(urls))')
+          SELECTED_GAMEPLAY_URL=$(python3 -c 'import os,json,random; raw=os.environ.get("GAMEPLAY_URLS","").strip(); urls=json.loads(raw) if raw.startswith("[") else [raw]; urls=[str(u).strip() for u in urls if str(u).strip()]; assert urls, "No gameplay URL provided"; print(random.choice(urls))')
 
           echo "Selected gameplay URL: $SELECTED_GAMEPLAY_URL"
           echo "SELECTED_GAMEPLAY_URL=$SELECTED_GAMEPLAY_URL" >> $GITHUB_ENV
@@ -58,7 +48,8 @@ print(random.choice(urls))')
           echo "Downloading gameplay..."
           echo "$SELECTED_GAMEPLAY_URL"
 
-          FILE_ID=$(python3 -c 'import os, re; url=os.environ["SELECTED_GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
+          FILE_ID=$(python3 -c 'import os,re; url=os.environ["SELECTED_GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
+
           echo "Google Drive File ID: $FILE_ID"
 
           gdown "https://drive.google.com/uc?id=$FILE_ID" -O input/gameplay.mp4
@@ -69,10 +60,10 @@ print(random.choice(urls))')
           DURATION=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 input/gameplay.mp4)
           echo "Gameplay duration: $DURATION"
 
-          START=$(DURATION="$DURATION" python3 -c 'import random, os; duration=float(os.environ["DURATION"]); target=50.0; max_start=max(0.0, duration-target-1); print(round(random.uniform(0, max_start), 2))')
+          RANDOM_START=$(DURATION="$DURATION" python3 -c 'import os,random; duration=float(os.environ["DURATION"]); target=50.0; max_start=max(0.0, duration-target-1); print(round(random.uniform(0, max_start), 2))')
 
-          echo "RANDOM_START=$START" >> $GITHUB_ENV
-          echo "Random start: $START"
+          echo "Random start: $RANDOM_START"
+          echo "RANDOM_START=$RANDOM_START" >> $GITHUB_ENV
 
       - name: Render gameplay to 9x16
         run: |
