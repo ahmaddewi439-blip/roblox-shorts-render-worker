@@ -44,12 +44,12 @@ jobs:
           gdown "https://drive.google.com/uc?id=$FILE_ID" -O input/gameplay.mp4
           ls -lh input/gameplay.mp4
 
-      - name: Render gameplay to 9x16
+          - name: Render gameplay to 9x16
         run: |
           ffmpeg -y \
             -i input/gameplay.mp4 \
             -t 50 \
-            -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28[bg];[0:v]scale=1000:563:force_original_aspect_ratio=decrease,pad=1000:563:(ow-iw)/2:(oh-ih)/2:color=black[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]" \
+            -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.04:saturation=1.12[bg];[0:v]scale=1000:1780:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]" \
             -map "[v]" \
             -map 0:a? \
             -r 30 \
