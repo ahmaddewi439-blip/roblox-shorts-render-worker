@@ -44,7 +44,7 @@ jobs:
           gdown "https://drive.google.com/uc?id=$FILE_ID" -O input/gameplay.mp4
           ls -lh input/gameplay.mp4
 
-          - name: Render gameplay to 9x16
+      - name: Render gameplay to 9x16
         run: |
           ffmpeg -y \
             -i input/gameplay.mp4 \
