@@ -31,36 +31,23 @@ jobs:
           mkdir -p input
           mkdir -p output
 
-    - name: Download gameplay from Google Drive
-  env:
-    GAMEPLAY_URL: ${{ github.event.inputs.gameplay_url }}
-  run: |
-    echo "Downloading gameplay..."
-    echo "$GAMEPLAY_URL"
-
-    FILE_ID=$(python3 -c 'import os, re; url=os.environ["GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
-    echo "Google Drive File ID: $FILE_ID"
-
-    gdown "$FILE_ID" -O input/gameplay.mp4
-    ls -lh input/gameplay.mp4
-
-      - name: Pick random cut start
+      - name: Download gameplay from Google Drive
+        env:
+          GAMEPLAY_URL: ${{ github.event.inputs.gameplay_url }}
         run: |
-          DURATION=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 input/gameplay.mp4)
-          echo "Gameplay duration: $DURATION"
-
-          START=$(DURATION="$DURATION" python3 -c 'import random, os; duration=float(os.environ["DURATION"]); target=50.0; max_start=max(0.0, duration-target-1); print(round(random.uniform(0, max_start), 2))')
-
-          echo "RANDOM_START=$START" >> $GITHUB_ENV
-          echo "Random start: $START"
+          echo "Downloading gameplay..."
+          echo "$GAMEPLAY_URL"
+          FILE_ID=$(python3 -c 'import os, re; url=os.environ["GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
+          echo "Google Drive File ID: $FILE_ID"
+          gdown "$FILE_ID" -O input/gameplay.mp4
+          ls -lh input/gameplay.mp4
 
       - name: Render gameplay to 9x16
         run: |
           ffmpeg -y \
-            -ss "$RANDOM_START" \
             -i input/gameplay.mp4 \
             -t 50 \
-            -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.04:saturation=1.12[bg];[0:v]scale=1000:563:force_original_aspect_ratio=decrease,pad=1000:563:(ow-iw)/2:(oh-ih)/2:color=black[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]" \
+            -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28[bg];[0:v]scale=1000:563:force_original_aspect_ratio=decrease,pad=1000:563:(ow-iw)/2:(oh-ih)/2:color=black[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]" \
             -map "[v]" \
             -map 0:a? \
             -r 30 \
