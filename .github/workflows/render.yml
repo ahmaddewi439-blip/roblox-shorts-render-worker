@@ -2,6 +2,11 @@ name: Render Roblox Shorts Video
 
 on:
   workflow_dispatch:
+    inputs:
+      gameplay_url:
+        description: "Google Drive gameplay video URL"
+        required: true
+        default: ""
 
 permissions:
   contents: write
@@ -14,26 +19,63 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install FFmpeg
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg python3-pip
+          python3 -m pip install --upgrade pip
+          python3 -m pip install gdown
 
-      - name: Create output folder
+      - name: Create folders
         run: |
+          mkdir -p input
           mkdir -p output
 
-      - name: Render test 9x16 video
+      - name: Download gameplay from Google Drive
+        env:
+          GAMEPLAY_URL: ${{ github.event.inputs.gameplay_url }}
+        run: |
+          echo "Downloading gameplay..."
+          echo "$GAMEPLAY_URL"
+          gdown --fuzzy "$GAMEPLAY_URL" -O input/gameplay.mp4
+          ls -lh input/gameplay.mp4
+
+      - name: Pick random cut start
+        run: |
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 input/gameplay.mp4)
+          echo "Gameplay duration: $DURATION"
+
+          START=$(python3 - <<PY
+import random
+duration = float("$DURATION")
+target = 50.0
+max_start = max(0.0, duration - target - 1)
+print(round(random.uniform(0, max_start), 2))
+PY
+          )
+
+          echo "RANDOM_START=$START" >> $GITHUB_ENV
+          echo "Random start: $START"
+
+      - name: Render gameplay to 9x16
         run: |
           ffmpeg -y \
-            -f lavfi -i "color=c=green:s=1080x1920:d=10" \
-            -f lavfi -i "sine=frequency=1000:duration=10" \
+            -ss "$RANDOM_START" \
+            -i input/gameplay.mp4 \
+            -t 50 \
+            -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.04:saturation=1.12[bg];[0:v]scale=1000:563:force_original_aspect_ratio=decrease,pad=1000:563:(ow-iw)/2:(oh-ih)/2:color=black@0[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]" \
+            -map "[v]" \
+            -map 0:a? \
+            -r 30 \
             -c:v libx264 \
+            -preset veryfast \
+            -crf 23 \
             -c:a aac \
-            -pix_fmt yuv420p \
+            -b:a 128k \
+            -shortest \
             output/final_video.mp4
 
-      - name: Check final video
+      - name: Final video quality check
         run: |
           echo "===================================================="
           echo "FINAL VIDEO QUALITY CHECK"
