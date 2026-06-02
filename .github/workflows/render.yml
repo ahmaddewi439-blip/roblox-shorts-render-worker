@@ -31,14 +31,25 @@ jobs:
           mkdir -p input
           mkdir -p output
 
-      - name: Pick one gameplay URL
+           - name: Pick one gameplay URL
         env:
           GAMEPLAY_URLS: ${{ github.event.inputs.gameplay_urls }}
         run: |
           echo "Received gameplay URLs:"
           echo "$GAMEPLAY_URLS"
 
-          SELECTED_GAMEPLAY_URL=$(python3 -c 'import os, json, random; urls=json.loads(os.environ["GAMEPLAY_URLS"]); urls=[u.strip() for u in urls if str(u).strip()]; print(random.choice(urls))')
+          SELECTED_GAMEPLAY_URL=$(python3 -c 'import os, json, random; raw=os.environ["GAMEPLAY_URLS"].strip(); 
+try:
+    urls=json.loads(raw)
+    if isinstance(urls, str):
+        urls=[urls]
+except Exception:
+    urls=[raw]
+urls=[str(u).strip() for u in urls if str(u).strip()]
+if not urls:
+    raise SystemExit("No gameplay URL provided")
+print(random.choice(urls))')
+
           echo "Selected gameplay URL: $SELECTED_GAMEPLAY_URL"
           echo "SELECTED_GAMEPLAY_URL=$SELECTED_GAMEPLAY_URL" >> $GITHUB_ENV
 
