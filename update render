@@ -1,0 +1,124 @@
+name: Render Roblox Shorts Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      gameplay_urls:
+        description: "JSON array of Google Drive gameplay video URLs"
+        required: true
+        default: "[]"
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
+          python3 -m pip install --upgrade pip
+          python3 -m pip install gdown
+
+      - name: Create folders
+        run: |
+          mkdir -p input
+          mkdir -p output
+
+           - name: Pick one gameplay URL
+        env:
+          GAMEPLAY_URLS: ${{ github.event.inputs.gameplay_urls }}
+        run: |
+          echo "Received gameplay URLs:"
+          echo "$GAMEPLAY_URLS"
+
+          SELECTED_GAMEPLAY_URL=$(python3 -c 'import os, json, random; raw=os.environ["GAMEPLAY_URLS"].strip(); 
+try:
+    urls=json.loads(raw)
+    if isinstance(urls, str):
+        urls=[urls]
+except Exception:
+    urls=[raw]
+urls=[str(u).strip() for u in urls if str(u).strip()]
+if not urls:
+    raise SystemExit("No gameplay URL provided")
+print(random.choice(urls))')
+
+          echo "Selected gameplay URL: $SELECTED_GAMEPLAY_URL"
+          echo "SELECTED_GAMEPLAY_URL=$SELECTED_GAMEPLAY_URL" >> $GITHUB_ENV
+
+      - name: Download gameplay from Google Drive
+        run: |
+          echo "Downloading gameplay..."
+          echo "$SELECTED_GAMEPLAY_URL"
+
+          FILE_ID=$(python3 -c 'import os, re; url=os.environ["SELECTED_GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
+          echo "Google Drive File ID: $FILE_ID"
+
+          gdown "https://drive.google.com/uc?id=$FILE_ID" -O input/gameplay.mp4
+          ls -lh input/gameplay.mp4
+
+      - name: Pick random cut start
+        run: |
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 input/gameplay.mp4)
+          echo "Gameplay duration: $DURATION"
+
+          START=$(DURATION="$DURATION" python3 -c 'import random, os; duration=float(os.environ["DURATION"]); target=50.0; max_start=max(0.0, duration-target-1); print(round(random.uniform(0, max_start), 2))')
+
+          echo "RANDOM_START=$START" >> $GITHUB_ENV
+          echo "Random start: $START"
+
+      - name: Render gameplay to 9x16
+        run: |
+          ffmpeg -y \
+            -ss "$RANDOM_START" \
+            -i input/gameplay.mp4 \
+            -t 50 \
+            -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.04:saturation=1.12[bg];[0:v]scale=1000:1780:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]" \
+            -map "[v]" \
+            -map 0:a? \
+            -r 30 \
+            -c:v libx264 \
+            -preset veryfast \
+            -crf 23 \
+            -c:a aac \
+            -b:a 128k \
+            -shortest \
+            output/final_video.mp4
+
+      - name: Final video quality check
+        run: |
+          echo "===================================================="
+          echo "FINAL VIDEO QUALITY CHECK"
+          echo "Project: GitHub Render Worker"
+          echo "===================================================="
+          test -f output/final_video.mp4 && echo "PASS | Final video found | output/final_video.mp4"
+          echo "PASS | Final video size | $(du -h output/final_video.mp4 | cut -f1)"
+          echo "Resolution:"
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 output/final_video.mp4
+          echo "Duration:"
+          ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 output/final_video.mp4
+          echo "===================================================="
+          echo "CHECK DONE"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: render-${{ github.run_id }}
+          name: Render Output ${{ github.run_id }}
+          files: output/final_video.mp4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show final URL
+        run: |
+          echo "===================================================="
+          echo "FINAL VIDEO URL"
+          echo "https://github.com/${{ github.repository }}/releases/download/render-${{ github.run_id }}/final_video.mp4"
+          echo "===================================================="
