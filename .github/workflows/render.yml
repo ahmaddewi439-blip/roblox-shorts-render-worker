@@ -1,1 +1,65 @@
+name: Render Roblox Shorts Video
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Create output folder
+        run: |
+          mkdir -p output
+
+      - name: Render test 9x16 video
+        run: |
+          ffmpeg -y \
+            -f lavfi -i "color=c=green:s=1080x1920:d=10" \
+            -f lavfi -i "sine=frequency=1000:duration=10" \
+            -c:v libx264 \
+            -c:a aac \
+            -pix_fmt yuv420p \
+            output/final_video.mp4
+
+      - name: Check final video
+        run: |
+          echo "===================================================="
+          echo "FINAL VIDEO QUALITY CHECK"
+          echo "Project: GitHub Render Worker"
+          echo "===================================================="
+          test -f output/final_video.mp4 && echo "PASS | Final video found | output/final_video.mp4"
+          echo "PASS | Final video size | $(du -h output/final_video.mp4 | cut -f1)"
+          echo "Resolution:"
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 output/final_video.mp4
+          echo "Duration:"
+          ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 output/final_video.mp4
+          echo "===================================================="
+          echo "CHECK DONE"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: render-${{ github.run_id }}
+          name: Render Output ${{ github.run_id }}
+          files: output/final_video.mp4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show final URL
+        run: |
+          echo "===================================================="
+          echo "FINAL VIDEO URL"
+          echo "https://github.com/${{ github.repository }}/releases/download/render-${{ github.run_id }}/final_video.mp4"
+          echo "===================================================="
