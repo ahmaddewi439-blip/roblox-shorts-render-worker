@@ -31,14 +31,18 @@ jobs:
           mkdir -p input
           mkdir -p output
 
-      - name: Download gameplay from Google Drive
-        env:
-          GAMEPLAY_URL: ${{ github.event.inputs.gameplay_url }}
-        run: |
-          echo "Downloading gameplay..."
-          echo "$GAMEPLAY_URL"
-          gdown --fuzzy "$GAMEPLAY_URL" -O input/gameplay.mp4
-          ls -lh input/gameplay.mp4
+    - name: Download gameplay from Google Drive
+  env:
+    GAMEPLAY_URL: ${{ github.event.inputs.gameplay_url }}
+  run: |
+    echo "Downloading gameplay..."
+    echo "$GAMEPLAY_URL"
+
+    FILE_ID=$(python3 -c 'import os, re; url=os.environ["GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
+    echo "Google Drive File ID: $FILE_ID"
+
+    gdown "$FILE_ID" -O input/gameplay.mp4
+    ls -lh input/gameplay.mp4
 
       - name: Pick random cut start
         run: |
