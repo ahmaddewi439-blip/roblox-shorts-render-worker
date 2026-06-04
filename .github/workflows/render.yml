@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg python3-pip fonts-dejavu-core
           python3 -m pip install --upgrade pip
-         python3 -m pip install gdown pillow requests edge-tts deep-translator
+          python3 -m pip install gdown pillow requests edge-tts deep-translator
 
       - name: Create folders
         run: |
@@ -45,6 +45,8 @@ jobs:
           print("Selected rank:", data.get("selectedRank"))
           print("Gameplay URLs:", len(data.get("gameplayUrls", [])))
           print("Scenes:", len(data.get("scenes", [])))
+          print("Voice language:", data.get("voiceLang"))
+          print("Voice intonation:", data.get("voiceIntonation"))
           PY
 
       - name: Render full selected-rank video
