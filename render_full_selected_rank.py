@@ -614,8 +614,6 @@ def concat_scenes(scene_files, output_path):
         ],
         "Concat final video",
     )
-
-
 def main():
     ensure_dirs()
 
@@ -630,23 +628,29 @@ def main():
     print("Job ID:", job.get("jobId"))
     print("Topic:", job.get("topic"))
     print("Selected rank:", job.get("selectedRank"))
+    print("Raw voiceLang:", job.get("voiceLang"))
+    print("Raw voiceIntonation:", job.get("voiceIntonation"))
 
- voice_settings = get_voice_settings(
-    job.get("voiceLang") or job.get("language") or "English",
-    job.get("voiceIntonation") or "Calm Explainer",
-)
+    voice_settings = get_voice_settings(
+        job.get("voiceLang") or job.get("language") or "English",
+        job.get("voiceIntonation") or "Calm Explainer",
+    )
 
-print("Raw voiceLang:", job.get("voiceLang"))
-print("Output language:", voice_settings["language"])
-print("Target translate code:", voice_settings["target_code"])
-print("TTS voice:", voice_settings["voice"])
+    print("Output language:", voice_settings["language"])
+    print("Target translate code:", voice_settings["target_code"])
+    print("TTS voice:", voice_settings["voice"])
+    print("Voice intonation:", voice_settings["intonation"])
 
     gameplay_urls = job.get("gameplayUrls") or []
 
     if not gameplay_urls:
         raise RuntimeError("No gameplayUrls in payload")
 
-    gameplays = [download_gameplay(url, idx) for idx, url in enumerate(gameplay_urls[:5], start=1)]
+    gameplays = [
+        download_gameplay(url, idx)
+        for idx, url in enumerate(gameplay_urls[:5], start=1)
+    ]
+
     scenes = normalize_scenes(job)
     scene_images = prepare_scene_images(job, scenes)
 
@@ -655,22 +659,28 @@ print("TTS voice:", voice_settings["voice"])
     for index, scene in enumerate(scenes, start=1):
         audio_path = AUDIO_DIR / f"scene_{index:02d}.mp3"
 
-       original_voice_text = scene["voiceOver"]
-voice_text = translate_for_language(original_voice_text, voice_settings["target_code"])
-scene["voiceOver"] = voice_text
+        original_voice_text = scene["voiceOver"]
+        voice_text = translate_for_language(
+            original_voice_text,
+            voice_settings["target_code"]
+        )
 
-print("VO original:", original_voice_text)
-print("VO final:", voice_text)
+        scene["voiceOver"] = voice_text
 
-asyncio.run(
-    generate_tts(
-        voice_text,
-        audio_path,
-        voice=voice_settings["voice"],
-        rate=voice_settings["rate"],
-        pitch=voice_settings["pitch"],
-    )
-)
+        print("Scene:", index)
+        print("Title:", scene["title"])
+        print("VO original:", original_voice_text)
+        print("VO final:", voice_text)
+
+        asyncio.run(
+            generate_tts(
+                voice_text,
+                audio_path,
+                voice=voice_settings["voice"],
+                rate=voice_settings["rate"],
+                pitch=voice_settings["pitch"],
+            )
+        )
 
         gameplay = pick_gameplay(gameplays, index - 1)
         out = TEMP_DIR / f"scene_{index:02d}_with_voice.mp4"
