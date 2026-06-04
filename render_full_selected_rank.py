@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import edge_tts
 import requests
 from PIL import Image, ImageDraw, ImageFont
-
+from deep_translator import GoogleTranslator
 
 ROOT = Path(".").resolve()
 INPUT_DIR = ROOT / "input"
@@ -28,7 +28,136 @@ HEIGHT = 1920
 FPS = 30
 
 DEFAULT_SCENE_DURATIONS = [3, 5, 12, 13, 10, 7]
+LANGUAGE_MAP = {
+    "english": {
+        "code": "en",
+        "voice_male": "en-US-GuyNeural",
+        "voice_female": "en-US-JennyNeural",
+    },
+    "indonesian": {
+        "code": "id",
+        "voice_male": "id-ID-ArdiNeural",
+        "voice_female": "id-ID-GadisNeural",
+    },
+    "turkish": {
+        "code": "tr",
+        "voice_male": "tr-TR-AhmetNeural",
+        "voice_female": "tr-TR-EmelNeural",
+    },
+    "spanish": {
+        "code": "es",
+        "voice_male": "es-ES-AlvaroNeural",
+        "voice_female": "es-ES-ElviraNeural",
+    },
+    "portuguese": {
+        "code": "pt",
+        "voice_male": "pt-BR-AntonioNeural",
+        "voice_female": "pt-BR-FranciscaNeural",
+    },
+    "french": {
+        "code": "fr",
+        "voice_male": "fr-FR-HenriNeural",
+        "voice_female": "fr-FR-DeniseNeural",
+    },
+    "german": {
+        "code": "de",
+        "voice_male": "de-DE-ConradNeural",
+        "voice_female": "de-DE-KatjaNeural",
+    },
+    "italian": {
+        "code": "it",
+        "voice_male": "it-IT-DiegoNeural",
+        "voice_female": "it-IT-ElsaNeural",
+    },
+    "dutch": {
+        "code": "nl",
+        "voice_male": "nl-NL-MaartenNeural",
+        "voice_female": "nl-NL-ColetteNeural",
+    },
+    "russian": {
+        "code": "ru",
+        "voice_male": "ru-RU-DmitryNeural",
+        "voice_female": "ru-RU-SvetlanaNeural",
+    },
+    "arabic": {
+        "code": "ar",
+        "voice_male": "ar-SA-HamedNeural",
+        "voice_female": "ar-SA-ZariyahNeural",
+    },
+    "hindi": {
+        "code": "hi",
+        "voice_male": "hi-IN-MadhurNeural",
+        "voice_female": "hi-IN-SwaraNeural",
+    },
+    "japanese": {
+        "code": "ja",
+        "voice_male": "ja-JP-KeitaNeural",
+        "voice_female": "ja-JP-NanamiNeural",
+    },
+    "korean": {
+        "code": "ko",
+        "voice_male": "ko-KR-InJoonNeural",
+        "voice_female": "ko-KR-SunHiNeural",
+    },
+    "chinese": {
+        "code": "zh-CN",
+        "voice_male": "zh-CN-YunxiNeural",
+        "voice_female": "zh-CN-XiaoxiaoNeural",
+    },
+    "vietnamese": {
+        "code": "vi",
+        "voice_male": "vi-VN-NamMinhNeural",
+        "voice_female": "vi-VN-HoaiMyNeural",
+    },
+    "thai": {
+        "code": "th",
+        "voice_male": "th-TH-NiwatNeural",
+        "voice_female": "th-TH-PremwadeeNeural",
+    },
+    "malay": {
+        "code": "ms",
+        "voice_male": "ms-MY-OsmanNeural",
+        "voice_female": "ms-MY-YasminNeural",
+    },
+    "filipino": {
+        "code": "tl",
+        "voice_male": "fil-PH-AngeloNeural",
+        "voice_female": "fil-PH-BlessicaNeural",
+    },
+    "polish": {
+        "code": "pl",
+        "voice_male": "pl-PL-MarekNeural",
+        "voice_female": "pl-PL-ZofiaNeural",
+    },
+}
 
+INTONATION_MAP = {
+    "calm explainer": {
+        "rate": "+0%",
+        "pitch": "+0Hz",
+        "gender": "male",
+    },
+    "energetic shorts": {
+        "rate": "+13%",
+        "pitch": "+4Hz",
+        "gender": "male",
+    },
+    "news reporter": {
+        "rate": "+8%",
+        "pitch": "+2Hz",
+        "gender": "male",
+    },
+    "mystery voice": {
+        "rate": "-6%",
+        "pitch": "-4Hz",
+        "gender": "male",
+    },
+    "friendly female": {
+        "rate": "+5%",
+        "pitch": "+3Hz",
+        "gender": "female",
+    },
+}
 
 def ensure_dirs():
     for folder in [INPUT_DIR, ASSETS_DIR, AUDIO_DIR, TEMP_DIR, OUTPUT_DIR]:
@@ -50,7 +179,107 @@ def run(cmd, label):
 def clean_text(value):
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
+def normalize_language(value):
+    text = clean_text(value).lower()
 
+    aliases = {
+        "global language": "english",
+        "en": "english",
+        "id": "indonesian",
+        "indonesia": "indonesian",
+        "bahasa indonesia": "indonesian",
+        "turkiye": "turkish",
+        "turkish / türkiye": "turkish",
+        "turkish / turkiye": "turkish",
+        "tr": "turkish",
+        "es": "spanish",
+        "pt": "portuguese",
+        "fr": "french",
+        "de": "german",
+        "it": "italian",
+        "nl": "dutch",
+        "ru": "russian",
+        "ar": "arabic",
+        "hi": "hindi",
+        "ja": "japanese",
+        "ko": "korean",
+        "zh": "chinese",
+        "zh-cn": "chinese",
+        "vi": "vietnamese",
+        "th": "thai",
+        "ms": "malay",
+        "tl": "filipino",
+        "fil": "filipino",
+        "pl": "polish",
+    }
+
+    text = aliases.get(text, text)
+
+    if text not in LANGUAGE_MAP:
+        return "english"
+
+    return text
+
+
+def normalize_intonation(value):
+    text = clean_text(value).lower()
+
+    aliases = {
+        "calm": "calm explainer",
+        "calm explainer": "calm explainer",
+        "energetic": "energetic shorts",
+        "energetic shorts": "energetic shorts",
+        "news": "news reporter",
+        "news reporter": "news reporter",
+        "mystery": "mystery voice",
+        "mystery voice": "mystery voice",
+        "friendly female": "friendly female",
+        "female": "friendly female",
+    }
+
+    text = aliases.get(text, text)
+
+    if text not in INTONATION_MAP:
+        return "calm explainer"
+
+    return text
+
+
+def get_voice_settings(language_value, intonation_value):
+    language = normalize_language(language_value)
+    intonation = normalize_intonation(intonation_value)
+
+    lang_data = LANGUAGE_MAP[language]
+    tone_data = INTONATION_MAP[intonation]
+
+    voice_key = "voice_female" if tone_data.get("gender") == "female" else "voice_male"
+
+    return {
+        "language": language,
+        "target_code": lang_data["code"],
+        "voice": lang_data.get(voice_key) or lang_data["voice_male"],
+        "rate": tone_data["rate"],
+        "pitch": tone_data["pitch"],
+        "intonation": intonation,
+    }
+
+
+def translate_for_language(text, target_code):
+    text = clean_text(text)
+
+    if not text:
+        return text
+
+    if target_code == "en":
+        return text
+
+    try:
+        translated = GoogleTranslator(source="auto", target=target_code).translate(text)
+        return clean_text(translated) or text
+    except Exception as error:
+        print("Translation fallback:", error)
+        return text
+        
 def short_text(value, limit=900):
     text = clean_text(value)
     return text[:limit].rstrip()
@@ -393,8 +622,8 @@ def normalize_scenes(job):
     return scenes
 
 
-async def generate_tts(text, out_path, voice="en-US-GuyNeural"):
-    communicate = edge_tts.Communicate(text, voice)
+async def generate_tts(text, out_path, voice="en-US-GuyNeural", rate="+0%", pitch="+0Hz"):
+    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
     await communicate.save(str(out_path))
     if not out_path.exists() or out_path.stat().st_size < 1000:
         raise RuntimeError(f"TTS failed: {out_path}")
@@ -524,6 +753,14 @@ def main():
     print("Job ID:", job.get("jobId"))
     print("Topic:", job.get("topic"))
     print("Selected rank:", job.get("selectedRank"))
+        voice_settings = get_voice_settings(
+        job.get("voiceLang") or job.get("language") or "English",
+        job.get("voiceIntonation") or "Calm Explainer",
+    )
+
+    print("Output language:", voice_settings["language"])
+    print("TTS voice:", voice_settings["voice"])
+    print("Voice intonation:", voice_settings["intonation"])
 
     gameplay_urls = job.get("gameplayUrls") or []
     if not gameplay_urls:
@@ -539,12 +776,23 @@ def main():
     scene_outputs = []
     for index, scene in enumerate(scenes, start=1):
         audio_path = AUDIO_DIR / f"scene_{index:02d}.mp3"
-        voice_text = scene["voiceOver"]
+               original_voice_text = scene["voiceOver"]
+        voice_text = translate_for_language(original_voice_text, voice_settings["target_code"])
+        scene["voiceOver"] = voice_text
 
         print("Scene", index, "|", scene["title"])
-        print("VO:", voice_text)
+        print("VO original:", original_voice_text)
+        print("VO final:", voice_text)
 
-        asyncio.run(generate_tts(voice_text, audio_path))
+        asyncio.run(
+            generate_tts(
+                voice_text,
+                audio_path,
+                voice=voice_settings["voice"],
+                rate=voice_settings["rate"],
+                pitch=voice_settings["pitch"],
+            )
+        )
 
         gameplay = pick_gameplay(gameplays, index - 1)
         out = TEMP_DIR / f"scene_{index:02d}_with_voice.mp4"
