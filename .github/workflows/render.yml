@@ -3,10 +3,10 @@ name: Render Roblox Shorts Video
 on:
   workflow_dispatch:
     inputs:
-      gameplay_urls:
-        description: "Paste 1 Google Drive gameplay URL or JSON array of URLs"
+      render_payload:
+        description: "Full render payload JSON from Vercel"
         required: true
-        default: ""
+        default: "{}"
 
 permissions:
   contents: write
@@ -22,64 +22,378 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
+          sudo apt-get install -y ffmpeg python3-pip fonts-dejavu-core
           python3 -m pip install --upgrade pip
-          python3 -m pip install gdown
+          python3 -m pip install gdown edge-tts pillow requests
 
       - name: Create folders
         run: |
           mkdir -p input
           mkdir -p output
+          mkdir -p temp/assets
+          mkdir -p temp/scenes
 
-      - name: Pick one gameplay URL
+      - name: Save render payload
         env:
-          GAMEPLAY_URLS: ${{ github.event.inputs.gameplay_urls }}
+          RENDER_PAYLOAD: ${{ github.event.inputs.render_payload }}
         run: |
-          echo "Received gameplay URLs:"
-          echo "$GAMEPLAY_URLS"
+          python3 - <<'PY'
+          import os, json
 
-          SELECTED_GAMEPLAY_URL=$(python3 -c 'import os,json,random; raw=os.environ.get("GAMEPLAY_URLS","").strip(); urls=json.loads(raw) if raw.startswith("[") else [raw]; urls=[str(u).strip() for u in urls if str(u).strip()]; assert urls, "No gameplay URL provided"; print(random.choice(urls))')
+          raw = os.environ.get("RENDER_PAYLOAD", "{}").strip()
+          payload = json.loads(raw)
 
-          echo "Selected gameplay URL: $SELECTED_GAMEPLAY_URL"
-          echo "SELECTED_GAMEPLAY_URL=$SELECTED_GAMEPLAY_URL" >> $GITHUB_ENV
+          required = ["topic", "gameplayUrls", "scenes"]
+          missing = [key for key in required if not payload.get(key)]
+          if missing:
+              raise SystemExit("Missing required payload keys: " + ", ".join(missing))
 
-      - name: Download gameplay from Google Drive
+          if not isinstance(payload.get("gameplayUrls"), list) or len(payload["gameplayUrls"]) < 1:
+              raise SystemExit("Minimal 1 gameplay URL required")
+
+          if not isinstance(payload.get("scenes"), list) or len(payload["scenes"]) < 1:
+              raise SystemExit("Minimal 1 scene required")
+
+          with open("input/render_payload.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+
+          print("Payload saved")
+          print("Job ID:", payload.get("jobId"))
+          print("Topic:", payload.get("topic"))
+          print("Selected Rank:", payload.get("selectedRank"))
+          print("Gameplay URLs:", len(payload.get("gameplayUrls", [])))
+          print("Scenes:", len(payload.get("scenes", [])))
+          PY
+
+      - name: Download random gameplay from Google Drive
         run: |
-          echo "Downloading gameplay..."
-          echo "$SELECTED_GAMEPLAY_URL"
+          python3 - <<'PY'
+          import json, random, re, subprocess, os
 
-          FILE_ID=$(python3 -c 'import os,re; url=os.environ["SELECTED_GAMEPLAY_URL"]; m=re.search(r"/file/d/([^/]+)", url) or re.search(r"[?&]id=([^&]+)", url); print(m.group(1) if m else url)')
+          with open("input/render_payload.json", "r", encoding="utf-8") as f:
+              payload = json.load(f)
 
-          echo "Google Drive File ID: $FILE_ID"
+          urls = [str(u).strip() for u in payload.get("gameplayUrls", []) if str(u).strip()]
+          if not urls:
+              raise SystemExit("No gameplay URL found")
 
-          gdown "https://drive.google.com/uc?id=$FILE_ID" -O input/gameplay.mp4
+          selected = random.choice(urls)
+          print("Selected gameplay URL:", selected)
+
+          m = re.search(r"/file/d/([^/]+)", selected) or re.search(r"[?&]id=([^&]+)", selected)
+          file_id = m.group(1) if m else selected
+          print("Google Drive file ID:", file_id)
+
+          subprocess.check_call([
+              "gdown",
+              f"https://drive.google.com/uc?id={file_id}",
+              "-O",
+              "input/gameplay.mp4"
+          ])
+
+          if not os.path.exists("input/gameplay.mp4") or os.path.getsize("input/gameplay.mp4") < 100000:
+              raise SystemExit("Downloaded gameplay is missing or too small")
+          PY
+
           ls -lh input/gameplay.mp4
 
-      - name: Pick random cut start
+      - name: Prepare scene assets and VO text
         run: |
-          DURATION=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 input/gameplay.mp4)
-          echo "Gameplay duration: $DURATION"
+          python3 - <<'PY'
+          import json, os, re, textwrap, requests
+          from PIL import Image, ImageDraw, ImageFont
 
-          RANDOM_START=$(DURATION="$DURATION" python3 -c 'import os,random; duration=float(os.environ["DURATION"]); target=50.0; max_start=max(0.0, duration-target-1); print(round(random.uniform(0, max_start), 2))')
+          WIDTH, HEIGHT = 1080, 1920
+          CARD_W, CARD_H = 920, 1180
 
-          echo "Random start: $RANDOM_START"
-          echo "RANDOM_START=$RANDOM_START" >> $GITHUB_ENV
+          def clean(value):
+              return re.sub(r"\s+", " ", str(value or "")).strip()
 
-      - name: Render gameplay to 9x16
+          def safe_text(value, max_len=260):
+              text = clean(value)
+              return text[:max_len].strip()
+
+          def get_font(size, bold=False):
+              paths = [
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+              ]
+              for p in paths:
+                  if os.path.exists(p):
+                      return ImageFont.truetype(p, size)
+              return ImageFont.load_default()
+
+          font_title = get_font(56, True)
+          font_body = get_font(42, False)
+          font_small = get_font(30, False)
+
+          def wrap(draw, text, font, width):
+              words = text.split()
+              lines = []
+              current = ""
+              for word in words:
+                  test = (current + " " + word).strip()
+                  bbox = draw.textbbox((0, 0), test, font=font)
+                  if bbox[2] - bbox[0] <= width:
+                      current = test
+                  else:
+                      if current:
+                          lines.append(current)
+                      current = word
+              if current:
+                  lines.append(current)
+              return lines
+
+          def draw_centered(draw, y, text, font, fill, max_width, line_gap=12):
+              lines = wrap(draw, text, font, max_width)
+              for line in lines:
+                  bbox = draw.textbbox((0, 0), line, font=font)
+                  x = (CARD_W - (bbox[2] - bbox[0])) // 2
+                  draw.text((x, y), line, font=font, fill=fill)
+                  y += (bbox[3] - bbox[1]) + line_gap
+              return y
+
+          def find_image_urls(obj):
+              urls = []
+              if isinstance(obj, dict):
+                  for k, v in obj.items():
+                      key = str(k).lower()
+                      if isinstance(v, str) and v.startswith("http") and any(ext in v.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                          urls.append(v)
+                      elif "image" in key and isinstance(v, str) and v.startswith("http"):
+                          urls.append(v)
+                      else:
+                          urls.extend(find_image_urls(v))
+              elif isinstance(obj, list):
+                  for item in obj:
+                      urls.extend(find_image_urls(item))
+              return urls
+
+          def download_image(url, output):
+              try:
+                  r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+                  if r.status_code == 200 and len(r.content) > 1000:
+                      with open(output, "wb") as f:
+                          f.write(r.content)
+                      Image.open(output).verify()
+                      return True
+              except Exception as e:
+                  print("Image download failed:", url, e)
+              return False
+
+          def make_card(scene, index, source_image_path=None):
+              topic = safe_text(payload.get("topic"), 90)
+              title = safe_text(scene.get("title") or f"Scene {index+1}", 80)
+              overlay = safe_text(scene.get("overlayText") or title, 80)
+              voice = safe_text(scene.get("voiceOver") or scene.get("voiceover") or scene.get("text"), 260)
+
+              img = Image.new("RGBA", (CARD_W, CARD_H), (18, 38, 28, 235))
+              draw = ImageDraw.Draw(img)
+
+              draw.rounded_rectangle((0, 0, CARD_W-1, CARD_H-1), radius=46, outline=(34, 197, 94, 255), width=8)
+              draw.rounded_rectangle((32, 32, CARD_W-32, 148), radius=28, fill=(34, 197, 94, 255))
+
+              badge = f"RANK {payload.get('selectedRank') or '-'} • SCENE {index+1}"
+              bbox = draw.textbbox((0, 0), badge, font=font_small)
+              draw.text(((CARD_W - (bbox[2]-bbox[0])) // 2, 74), badge, font=font_small, fill=(0, 0, 0, 255))
+
+              y = 190
+              y = draw_centered(draw, y, overlay.upper(), font_title, (255, 255, 255, 255), CARD_W-90, 16)
+
+              if source_image_path and os.path.exists(source_image_path):
+                  try:
+                      src = Image.open(source_image_path).convert("RGBA")
+                      src.thumbnail((CARD_W-110, 520))
+                      sx = (CARD_W - src.width) // 2
+                      img.alpha_composite(src, (sx, y + 28))
+                      y += src.height + 70
+                  except Exception as e:
+                      print("Source image use failed:", e)
+
+              y = max(y, 760)
+              y = draw_centered(draw, y, title, font_body, (220, 255, 235, 255), CARD_W-100, 14)
+
+              y += 34
+              draw_centered(draw, y, voice, font_small, (235, 245, 240, 255), CARD_W-110, 10)
+
+              draw.text((44, CARD_H-90), topic, font=font_small, fill=(180, 255, 210, 255))
+
+              output = f"temp/assets/scene_{index+1:02d}.png"
+              img.save(output)
+              return output
+
+          with open("input/render_payload.json", "r", encoding="utf-8") as f:
+              payload = json.load(f)
+
+          scenes = payload.get("scenes", [])[:6]
+          subtitles = payload.get("subtitles", [])
+          image_urls = find_image_urls(payload)
+          print("Found image URLs:", len(image_urls))
+
+          downloaded = []
+          for i, url in enumerate(image_urls[:12]):
+              out = f"temp/assets/source_{i+1:02d}.png"
+              if download_image(url, out):
+                  downloaded.append(out)
+
+          fixed_scenes = []
+          vo_parts = []
+
+          fallback_durations = [3, 5, 12, 13, 10, 7]
+
+          for i, scene in enumerate(scenes):
+              if not isinstance(scene, dict):
+                  scene = {"text": str(scene)}
+
+              voice = clean(scene.get("voiceOver") or scene.get("voiceover") or scene.get("text"))
+              if not voice and i < len(subtitles):
+                  sub = subtitles[i]
+                  if isinstance(sub, dict):
+                      voice = clean(sub.get("text") or sub.get("voiceOver"))
+                  else:
+                      voice = clean(sub)
+
+              if not voice:
+                  voice = f"This scene follows the selected Roblox rank topic: {payload.get('topic')}."
+
+              duration = scene.get("duration") or fallback_durations[i] if i < len(fallback_durations) else 8
+              try:
+                  duration = float(duration)
+              except Exception:
+                  duration = fallback_durations[i] if i < len(fallback_durations) else 8
+
+              source_image = downloaded[i % len(downloaded)] if downloaded else None
+              asset = make_card({**scene, "voiceOver": voice}, i, source_image)
+
+              fixed_scenes.append({
+                  "id": i + 1,
+                  "title": clean(scene.get("title") or f"Scene {i+1}"),
+                  "duration": duration,
+                  "voiceOver": voice,
+                  "asset": asset
+              })
+              vo_parts.append(voice)
+
+          if not fixed_scenes:
+              raise SystemExit("No scenes prepared")
+
+          payload["preparedScenes"] = fixed_scenes
+          payload["videoDuration"] = sum(float(s["duration"]) for s in fixed_scenes)
+
+          with open("input/render_payload_prepared.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+
+          with open("input/voiceover.txt", "w", encoding="utf-8") as f:
+              f.write("\n\n".join(vo_parts))
+
+          print("Prepared scenes:", len(fixed_scenes))
+          print("Video duration:", payload["videoDuration"])
+          PY
+
+      - name: Generate VO audio from selected rank subtitles
+        run: |
+          python3 - <<'PY'
+          import asyncio
+          import edge_tts
+
+          async def main():
+              with open("input/voiceover.txt", "r", encoding="utf-8") as f:
+                  text = f.read().strip()
+
+              if not text:
+                  raise RuntimeError("Voiceover text is empty")
+
+              communicate = edge_tts.Communicate(
+                  text,
+                  "en-US-JennyNeural",
+                  rate="+12%",
+                  volume="+6%",
+                  pitch="+3Hz"
+              )
+
+              await communicate.save("output/voiceover.mp3")
+
+          asyncio.run(main())
+          PY
+
+          ls -lh output/voiceover.mp3
+
+      - name: Render scenes with gameplay background and source overlay
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+
+          with open("input/render_payload_prepared.json", "r", encoding="utf-8") as f:
+              payload = json.load(f)
+
+          scenes = payload["preparedScenes"]
+
+          def ffmpeg_scene(scene, index):
+              duration = float(scene.get("duration") or 8)
+              asset = scene["asset"]
+              out = f"temp/scenes/scene_{index+1:02d}.mp4"
+
+              filter_complex = (
+                  "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+                  "crop=1080:1920,eq=brightness=-0.10:saturation=1.10,"
+                  "fps=30,setsar=1,format=yuv420p[bg];"
+                  "[1:v]scale=920:1280:force_original_aspect_ratio=decrease,format=rgba[fg];"
+                  "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=auto[v]"
+              )
+
+              cmd = [
+                  "ffmpeg", "-y",
+                  "-stream_loop", "-1",
+                  "-i", "input/gameplay.mp4",
+                  "-loop", "1",
+                  "-t", str(duration),
+                  "-i", asset,
+                  "-filter_complex", filter_complex,
+                  "-map", "[v]",
+                  "-t", str(duration),
+                  "-r", "30",
+                  "-an",
+                  "-c:v", "libx264",
+                  "-preset", "veryfast",
+                  "-crf", "23",
+                  "-pix_fmt", "yuv420p",
+                  out
+              ]
+
+              subprocess.check_call(cmd)
+              return out
+
+          outputs = []
+          for i, scene in enumerate(scenes):
+              outputs.append(ffmpeg_scene(scene, i))
+
+          with open("temp/concat.txt", "w", encoding="utf-8") as f:
+              for item in outputs:
+                  f.write("file '" + os.path.abspath(item).replace("'", "'\\''") + "'\n")
+
+          subprocess.check_call([
+              "ffmpeg", "-y",
+              "-f", "concat",
+              "-safe", "0",
+              "-i", "temp/concat.txt",
+              "-c", "copy",
+              "output/visual.mp4"
+          ])
+          PY
+
+          ls -lh output/visual.mp4
+
+      - name: Merge visual and VO
         run: |
           ffmpeg -y \
-            -ss "$RANDOM_START" \
-            -i input/gameplay.mp4 \
-            -t 50 \
-            -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=28,eq=brightness=-0.04:saturation=1.12[bg];[0:v]scale=1000:1780:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]" \
-            -map "[v]" \
-            -map 0:a? \
-            -r 30 \
-            -c:v libx264 \
-            -preset veryfast \
-            -crf 23 \
+            -i output/visual.mp4 \
+            -i output/voiceover.mp3 \
+            -map 0:v \
+            -map 1:a \
+            -c:v copy \
             -c:a aac \
             -b:a 128k \
+            -af apad \
             -shortest \
             output/final_video.mp4
 
@@ -87,7 +401,7 @@ jobs:
         run: |
           echo "===================================================="
           echo "FINAL VIDEO QUALITY CHECK"
-          echo "Project: GitHub Render Worker"
+          echo "Project: GitHub Cloud Render Worker"
           echo "===================================================="
           test -f output/final_video.mp4 && echo "PASS | Final video found | output/final_video.mp4"
           echo "PASS | Final video size | $(du -h output/final_video.mp4 | cut -f1)"
@@ -103,7 +417,9 @@ jobs:
         with:
           tag_name: render-${{ github.run_id }}
           name: Render Output ${{ github.run_id }}
-          files: output/final_video.mp4
+          files: |
+            output/final_video.mp4
+            input/render_payload_prepared.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
