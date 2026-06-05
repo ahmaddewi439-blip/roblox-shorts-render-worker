@@ -105,7 +105,63 @@ def build_continuous_voice_text(scenes, target_duration):
             voice_text = clean_text(voice_text + " " + sentence)
 
     return short_text(voice_text, 1400)    
+def split_sentences(text):
+    return [
+        item.strip()
+        for item in re.split(r'(?<=[.!?])\s+', clean_text(text))
+        if clean_text(item)
+    ]
 
+
+def get_voice_word_range(target_duration):
+    target_duration = int(target_duration)
+
+    if target_duration >= 60:
+        return 95, 120
+
+    return 70, 90
+
+
+def trim_voice_text_to_target(text, target_duration):
+    text = clean_text(text)
+    if not text:
+        return text
+
+    min_words, max_words = get_voice_word_range(target_duration)
+    sentences = split_sentences(text)
+
+    if not sentences:
+        words = text.split()
+        return " ".join(words[:max_words]).strip()
+
+    kept = []
+    total_words = 0
+
+    for sentence in sentences:
+        sentence_words = len(clean_text(sentence).split())
+
+        if total_words < min_words:
+            kept.append(sentence)
+            total_words += sentence_words
+            continue
+
+        if total_words + sentence_words <= max_words:
+            kept.append(sentence)
+            total_words += sentence_words
+            continue
+
+        break
+
+    if not kept:
+        kept = [sentences[0]]
+
+    result = clean_text(" ".join(kept))
+    words = result.split()
+
+    if len(words) > max_words:
+        result = " ".join(words[:max_words]).rstrip(",;:- ") + "."
+
+    return clean_text(result)
 
 def run(cmd, label):
     print("\n====================================================")
@@ -791,7 +847,72 @@ def merge_final_voice(video_path, audio_path, output_path, target_duration):
     if not temp_voiced.exists() or temp_voiced.stat().st_size < 100_000:
         raise RuntimeError("Continuous voice output invalid")
 
-    temp_voiced.replace(output_path)    
+    temp_voiced.replace(output_path)   
+def fit_audio_to_target(input_audio_path, output_audio_path, target_duration, tail_margin=0.35):
+    target_duration = max(1.0, float(target_duration) - float(tail_margin))
+    current_duration = ffprobe_duration(input_audio_path)
+
+    if current_duration <= 0:
+        raise RuntimeError("TTS audio duration invalid")
+
+    if abs(current_duration - target_duration) <= 0.35:
+           speed = current_duration / target_duration
+    speed = max(0.85, min(speed, 1.0))
+
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_audio_path),
+            "-filter:a",
+            f"atempo={speed:.4f}",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            str(output_audio_path),
+        ],
+        "Fit shorter TTS audio by slight slow-down",
+    )
+    return ffprobe_duration(output_audio_path)
+    if current_duration > target_duration:
+        speed = current_duration / target_duration
+        speed = max(1.0, min(speed, 1.12))
+
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(input_audio_path),
+                "-filter:a",
+                f"atempo={speed:.4f}",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                str(output_audio_path),
+            ],
+            "Fit TTS audio by slight speed-up",
+        )
+        return ffprobe_duration(output_audio_path)
+
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_audio_path),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            str(output_audio_path),
+        ],
+        "Normalize shorter TTS audio",
+    )
+    return ffprobe_duration(output_audio_path)    
 def main():
     ensure_dirs()
 
@@ -838,12 +959,22 @@ def main():
     scene_outputs = []
 
     continuous_voice_original = build_continuous_voice_text(scenes, target_duration)
+    continuous_voice_original = trim_voice_text_to_target(
+        continuous_voice_original,
+        target_duration
+    )
+
     continuous_voice_text = translate_for_language(
         continuous_voice_original,
         voice_settings["target_code"]
     )
+    continuous_voice_text = trim_voice_text_to_target(
+        continuous_voice_text,
+        target_duration
+    )
 
-    continuous_audio_path = AUDIO_DIR / "continuous_voice.mp3"
+    continuous_audio_raw_path = AUDIO_DIR / "continuous_voice_raw.mp3"
+    continuous_audio_path = AUDIO_DIR / "continuous_voice_fit.m4a"
 
     print("Continuous VO original:", continuous_voice_original)
     print("Continuous VO final:", continuous_voice_text)
@@ -852,12 +983,20 @@ def main():
     asyncio.run(
         generate_tts(
             continuous_voice_text,
-            continuous_audio_path,
+            continuous_audio_raw_path,
             voice=voice_settings["voice"],
             rate=voice_settings["rate"],
             pitch=voice_settings["pitch"],
         )
     )
+
+    fitted_audio_duration = fit_audio_to_target(
+        continuous_audio_raw_path,
+        continuous_audio_path,
+        target_duration
+    )
+
+    print("Continuous VO fitted duration:", fitted_audio_duration)
 
     for index, scene in enumerate(scenes, start=1):
         gameplay = pick_gameplay(gameplays, index - 1)
