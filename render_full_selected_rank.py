@@ -463,31 +463,36 @@ def get_scene_duration_plan(target_duration):
 def force_final_duration(input_path, output_path, target_duration):
     temp_locked = output_path.with_name(output_path.stem + "_duration_locked.mp4")
     target_duration = int(target_duration)
+
     run(
         [
             "ffmpeg",
             "-y",
             "-i",
-            str(video_no_audio),
-            "-i",
-            str(audio_path),
+            str(input_path),
             "-filter_complex",
-            "[1:a]apad[a]",
+            f"[0:v]tpad=stop_mode=clone:stop_duration={target_duration},setpts=PTS-STARTPTS[v];[0:a]apad[a]",
             "-map",
-            "0:v:0",
+            "[v]",
             "-map",
             "[a]",
             "-t",
-            str(scene_duration),
+            str(target_duration),
             "-c:v",
-            "copy",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
             "-c:a",
             "aac",
             "-b:a",
             "160k",
-            str(output_path),
+            "-movflags",
+            "+faststart",
+            str(temp_locked),
         ],
-        f"Merge scene {scene_index} voice duration locked",
+        "Force exact final duration lock",
     )
 
     if not temp_locked.exists() or temp_locked.stat().st_size < 100_000:
@@ -596,52 +601,6 @@ def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, o
         [
             "ffmpeg",
             "-y",
-            "-ss",
-            str(seek),
-            "-stream_loop",
-            "-1",
-            "-t",
-            str(scene_duration),
-            "-i",
-            str(gameplay_path),
-            "-loop",
-            "1",
-            "-t",
-            str(scene_duration),
-            "-i",
-            str(source_image),
-            "-loop",
-            "1",
-            "-t",
-            str(scene_duration),
-            "-i",
-            str(subtitle_png),
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[v]",
-            "-t",
-            str(scene_duration),
-            "-r",
-            str(FPS),
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            str(video_no_audio),
-        ],
-        f"Render scene {scene_index} visual",
-    )
-
-         run(
-        [
-            "ffmpeg",
-            "-y",
             "-i",
             str(video_no_audio),
             "-i",
@@ -666,7 +625,6 @@ def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, o
     )
 
     return output_path
-
 
 def concat_scenes(scene_files, output_path):
     concat_file = TEMP_DIR / "concat.txt"
