@@ -24,12 +24,11 @@ OUTPUT_DIR = ROOT / "output"
 WIDTH = 1080
 HEIGHT = 1920
 FPS = 30
-DEFAULT_SCENE_DURATIONS = [3, 5, 12, 13, 10, 7]
-ALLOWED_TARGET_DURATIONS = [30, 50, 60]
+DEFAULT_SCENE_DURATIONS = [3, 6, 10, 11, 9, 6]
+ALLOWED_TARGET_DURATIONS = [45, 60]
 
 SCENE_DURATION_PLANS = {
-    30: [3, 5, 7, 7, 5, 3],
-    50: [3, 5, 12, 13, 10, 7],
+    45: [3, 6, 10, 11, 9, 6],
     60: [3, 7, 15, 15, 12, 8],
 }
 
@@ -454,7 +453,7 @@ def parse_target_video_duration(job):
             nearest = min(ALLOWED_TARGET_DURATIONS, key=lambda item: abs(item - raw))
             return nearest
 
-    return 50
+    return 45
 
 
 def get_scene_duration_plan(target_duration):
@@ -462,7 +461,8 @@ def get_scene_duration_plan(target_duration):
 
 
 def force_final_duration(input_path, output_path, target_duration):
-    temp_trimmed = output_path.with_name(output_path.stem + "_duration_locked.mp4")
+    temp_locked = output_path.with_name(output_path.stem + "_duration_locked.mp4")
+    target_duration = int(target_duration)
 
     run(
         [
@@ -470,8 +470,14 @@ def force_final_duration(input_path, output_path, target_duration):
             "-y",
             "-i",
             str(input_path),
+            "-filter_complex",
+            f"[0:v]tpad=stop_mode=clone:stop_duration={target_duration},setpts=PTS-STARTPTS[v];[0:a]apad[a]",
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
             "-t",
-            str(int(target_duration)),
+            str(target_duration),
             "-c:v",
             "libx264",
             "-preset",
@@ -484,15 +490,15 @@ def force_final_duration(input_path, output_path, target_duration):
             "160k",
             "-movflags",
             "+faststart",
-            str(temp_trimmed),
+            str(temp_locked),
         ],
-        "Force final duration lock",
+        "Force exact final duration lock",
     )
 
-    if not temp_trimmed.exists() or temp_trimmed.stat().st_size < 100_000:
+    if not temp_locked.exists() or temp_locked.stat().st_size < 100_000:
         raise RuntimeError("Duration locked output invalid")
 
-    temp_trimmed.replace(output_path)
+    temp_locked.replace(output_path)
     
 def normalize_scenes(job, target_duration):
     raw_scenes = job.get("scenes") if isinstance(job.get("scenes"), list) else []
@@ -637,7 +643,7 @@ def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, o
         f"Render scene {scene_index} visual",
     )
 
-    run(
+         run(
         [
             "ffmpeg",
             "-y",
@@ -645,20 +651,23 @@ def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, o
             str(video_no_audio),
             "-i",
             str(audio_path),
+            "-filter_complex",
+            "[1:a]apad[a]",
             "-map",
             "0:v:0",
             "-map",
-            "1:a:0",
+            "[a]",
+            "-t",
+            str(scene_duration),
             "-c:v",
             "copy",
             "-c:a",
             "aac",
             "-b:a",
             "160k",
-            "-shortest",
             str(output_path),
         ],
-        f"Merge scene {scene_index} voice",
+        f"Merge scene {scene_index} voice duration locked",
     )
 
     return output_path
