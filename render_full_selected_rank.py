@@ -616,43 +616,29 @@ def prepare_scene_images(job, scenes):
 
 def render_scene(scene, scene_index, gameplay_path, source_images, output_path, job):
     scene_duration = max(min(float(scene["duration"]), 60.0), 2.5)
-    seek = random_seek(gameplay_path, scene_duration, seed=scene_index * 999 + len(clean_text(job.get("topic"))))
+    base_seek = random_seek(
+        gameplay_path,
+        scene_duration,
+        seed=scene_index * 999 + len(clean_text(job.get("topic")))
+    )
 
-    video_no_audio = TEMP_DIR / f"scene_{scene_index:02d}_video.mp4"
+    usable_images = list(source_images or [])[:3]
 
-    if source_images:
-        source_image = source_images[(scene_index - 1) % len(source_images)]
-
-        filter_complex = (
-            f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-            f"crop={WIDTH}:{HEIGHT},eq=brightness=-0.12:saturation=1.08,"
-            f"fps={FPS},setsar=1[bg];"
-            f"[1:v]scale=920:980:force_original_aspect_ratio=decrease,format=rgba[src];"
-            f"[bg][src]overlay=x=(W-w)/2:y=250:format=auto[v]"
-        )
-
+    if not usable_images:
         run(
             [
                 "ffmpeg",
                 "-y",
                 "-ss",
-                str(seek),
+                str(base_seek),
                 "-stream_loop",
                 "-1",
                 "-t",
                 str(scene_duration),
                 "-i",
                 str(gameplay_path),
-                "-loop",
-                "1",
-                "-t",
-                str(scene_duration),
-                "-i",
-                str(source_image),
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "[v]",
+                "-vf",
+                f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},eq=brightness=-0.10:saturation=1.10,fps={FPS},setsar=1",
                 "-t",
                 str(scene_duration),
                 "-r",
@@ -668,43 +654,84 @@ def render_scene(scene, scene_index, gameplay_path, source_images, output_path, 
                 "yuv420p",
                 str(output_path),
             ],
-            f"Render scene {scene_index} visual with source image",
+            f"Render scene {scene_index} gameplay only no source card",
         )
 
         return output_path
 
-    run(
-        [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            str(seek),
-            "-stream_loop",
-            "-1",
-            "-t",
-            str(scene_duration),
-            "-i",
-            str(gameplay_path),
-            "-vf",
-            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},eq=brightness=-0.12:saturation=1.08,fps={FPS},setsar=1",
-            "-t",
-            str(scene_duration),
-            "-r",
-            str(FPS),
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            str(output_path),
-        ],
-        f"Render scene {scene_index} gameplay only no scene card",
-    )
+    visual_parts = []
+    part_duration = scene_duration / len(usable_images)
 
+    for image_index, source_image in enumerate(usable_images, start=1):
+        part_path = TEMP_DIR / f"scene_{scene_index:02d}_visual_part_{image_index:02d}.mp4"
+        part_seek = base_seek + ((image_index - 1) * max(0.1, part_duration))
+
+        motion_x = "(W-w)/2+18*sin(2*PI*t/3)"
+        motion_y = "235+14*sin(2*PI*t/4)"
+        fade_out_start = max(0.1, part_duration - 0.35)
+
+        if image_index % 2 == 0:
+            motion_x = "(W-w)/2-18*sin(2*PI*t/3)"
+            motion_y = "285+12*sin(2*PI*t/4)"
+
+        filter_complex = (
+            f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={WIDTH}:{HEIGHT},eq=brightness=-0.12:saturation=1.10,"
+            f"fps={FPS},setsar=1[bg];"
+            f"[1:v]scale=930:980:force_original_aspect_ratio=decrease,"
+            f"format=rgba,"
+            f"fade=t=in:st=0:d=0.25:alpha=1,"
+            f"fade=t=out:st={fade_out_start}:d=0.25:alpha=1[src];"
+            f"[bg][src]overlay=x='{motion_x}':y='{motion_y}':format=auto[v]"
+        )
+
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                str(part_seek),
+                "-stream_loop",
+                "-1",
+                "-t",
+                str(part_duration),
+                "-i",
+                str(gameplay_path),
+                "-loop",
+                "1",
+                "-t",
+                str(part_duration),
+                "-i",
+                str(source_image),
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[v]",
+                "-t",
+                str(part_duration),
+                "-r",
+                str(FPS),
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
+                str(part_path),
+            ],
+            f"Render scene {scene_index} source visual motion part {image_index}",
+        )
+
+        visual_parts.append(part_path)
+
+    if len(visual_parts) == 1:
+        visual_parts[0].replace(output_path)
+        return output_path
+
+    concat_scenes(visual_parts, output_path)
     return output_path
 
 def concat_scenes(scene_files, output_path):
