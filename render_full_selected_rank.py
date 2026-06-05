@@ -25,6 +25,13 @@ WIDTH = 1080
 HEIGHT = 1920
 FPS = 30
 DEFAULT_SCENE_DURATIONS = [3, 5, 12, 13, 10, 7]
+ALLOWED_TARGET_DURATIONS = [30, 50, 60]
+
+SCENE_DURATION_PLANS = {
+    30: [3, 5, 7, 7, 5, 3],
+    50: [3, 5, 12, 13, 10, 7],
+    60: [3, 7, 15, 15, 12, 8],
+}
 
 LANGUAGE_MAP = {
     "english": {"code": "en", "male": "en-US-GuyNeural", "female": "en-US-JennyNeural"},
@@ -417,8 +424,77 @@ def parse_duration(value, fallback):
     match = re.search(r"(\d+(?:\.\d+)?)", clean_text(value))
     return max(1.0, float(match.group(1))) if match else float(fallback)
 
+def parse_target_video_duration(job):
+    candidates = [
+        job.get("videoDuration"),
+        job.get("duration"),
+        job.get("targetDuration"),
+        job.get("durationLabel"),
+    ]
 
-def normalize_scenes(job):
+    for value in candidates:
+        text = clean_text(value)
+        match = re.search(r"(\d+(?:\.\d+)?)", text)
+
+        if match:
+            raw = int(round(float(match.group(1))))
+
+            if raw in ALLOWED_TARGET_DURATIONS:
+                return raw
+
+            nearest = min(ALLOWED_TARGET_DURATIONS, key=lambda item: abs(item - raw))
+            return nearest
+
+        if isinstance(value, (int, float)):
+            raw = int(round(float(value)))
+
+            if raw in ALLOWED_TARGET_DURATIONS:
+                return raw
+
+            nearest = min(ALLOWED_TARGET_DURATIONS, key=lambda item: abs(item - raw))
+            return nearest
+
+    return 50
+
+
+def get_scene_duration_plan(target_duration):
+    return SCENE_DURATION_PLANS.get(int(target_duration), SCENE_DURATION_PLANS[50])
+
+
+def force_final_duration(input_path, output_path, target_duration):
+    temp_trimmed = output_path.with_name(output_path.stem + "_duration_locked.mp4")
+
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
+            "-t",
+            str(int(target_duration)),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+            str(temp_trimmed),
+        ],
+        "Force final duration lock",
+    )
+
+    if not temp_trimmed.exists() or temp_trimmed.stat().st_size < 100_000:
+        raise RuntimeError("Duration locked output invalid")
+
+    temp_trimmed.replace(output_path)
+    
+def normalize_scenes(job, target_duration):
     raw_scenes = job.get("scenes") if isinstance(job.get("scenes"), list) else []
     subtitles = job.get("subtitles") if isinstance(job.get("subtitles"), list) else []
 
@@ -457,10 +533,7 @@ def normalize_scenes(job):
             "id": scene.get("id") or scene.get("scene") or index + 1,
             "title": clean_text(scene.get("title")) or f"SCENE {index + 1}",
             "voiceOver": short_text(voice, 520),
-            "duration": parse_duration(
-                scene.get("duration") or scene.get("sceneDuration") or scene.get("time") or scene.get("range"),
-                DEFAULT_SCENE_DURATIONS[index] if index < len(DEFAULT_SCENE_DURATIONS) else 8,
-            ),
+            "duration": get_scene_duration_plan(target_duration)[index] if index < len(get_scene_duration_plan(target_duration)) else 5,
             "images": scene.get("images") or scene.get("imageUrls") or scene.get("visuals") or [],
         })
 
@@ -500,7 +573,7 @@ def prepare_scene_images(job, scenes):
 
 def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, output_path, job):
     audio_duration = ffprobe_duration(audio_path)
-    scene_duration = max(float(scene["duration"]), audio_duration + 0.5, 2.5)
+    scene_duration = max(min(float(scene["duration"]), 60.0), 2.5)
     seek = random_seek(gameplay_path, scene_duration, seed=scene_index * 999 + len(clean_text(job.get("topic"))))
     source_image = source_images[(scene_index - 1) % len(source_images)]
 
@@ -651,7 +724,10 @@ def main():
         for idx, url in enumerate(gameplay_urls[:5], start=1)
     ]
 
-    scenes = normalize_scenes(job)
+    target_duration = parse_target_video_duration(job)
+    print("Target video duration lock:", target_duration)
+
+    scenes = normalize_scenes(job, target_duration)
     scene_images = prepare_scene_images(job, scenes)
 
     scene_outputs = []
@@ -689,6 +765,17 @@ def main():
         scene_outputs.append(out)
 
     concat_scenes(scene_outputs, output_path)
+    force_final_duration(output_path, output_path, target_duration)
+
+    actual_duration = ffprobe_duration(output_path)
+
+    if actual_duration > target_duration + 0.25:
+        raise RuntimeError(
+            f"Final duration exceeds target. Actual={actual_duration:.2f}s Target={target_duration}s"
+        )
+
+    print("Final duration:", actual_duration)
+    print("Duration target:", target_duration)
 
     if not output_path.exists() or output_path.stat().st_size < 100_000:
         raise RuntimeError("Final output invalid")
