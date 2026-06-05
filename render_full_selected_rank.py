@@ -577,20 +577,30 @@ def normalize_scenes(job, target_duration):
 
 
 def prepare_scene_images(job, scenes):
-    global_urls = collect_urls_deep(job.get("sourceResults", []), limit=40)
+    global_urls = collect_urls_deep(job, limit=80)
     prepared = []
     cursor = 0
 
     for index, scene in enumerate(scenes, start=1):
         scene_urls = collect_urls_deep(scene, limit=20)
 
-        while len(scene_urls) < 2 and cursor < len(global_urls):
+        unique_scene_urls = []
+        seen_urls = set()
+
+        for url in scene_urls + global_urls:
+            if url not in seen_urls:
+                seen_urls.add(url)
+                unique_scene_urls.append(url)
+
+        scene_urls = unique_scene_urls
+
+        while len(scene_urls) < 3 and cursor < len(global_urls):
             scene_urls.append(global_urls[cursor])
             cursor += 1
 
         files = []
 
-        for url in scene_urls[:3]:
+        for url in scene_urls[:4]:
             digest = hashlib.md5(url.encode("utf-8")).hexdigest()[:10]
             out = ASSETS_DIR / f"scene_{index:02d}_{digest}.jpg"
 
@@ -598,29 +608,70 @@ def prepare_scene_images(job, scenes):
                 files.append(out)
 
         if not files:
-            card = ASSETS_DIR / f"scene_{index:02d}_source_card.png"
-            make_text_card(card, scene["title"], scene["voiceOver"], job.get("topic", "Roblox update"), index)
-            files.append(card)
+            print(f"No source image for scene {index}. Using gameplay only, without scene card.")
 
         prepared.append(files)
 
     return prepared
 
-
 def render_scene(scene, scene_index, gameplay_path, source_images, output_path, job):
     scene_duration = max(min(float(scene["duration"]), 60.0), 2.5)
     seek = random_seek(gameplay_path, scene_duration, seed=scene_index * 999 + len(clean_text(job.get("topic"))))
-    source_image = source_images[(scene_index - 1) % len(source_images)]
 
     video_no_audio = TEMP_DIR / f"scene_{scene_index:02d}_video.mp4"
 
-    filter_complex = (
-        f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={WIDTH}:{HEIGHT},eq=brightness=-0.12:saturation=1.08,"
-        f"fps={FPS},setsar=1[bg];"
-        f"[1:v]scale=920:980:force_original_aspect_ratio=decrease,format=rgba[src];"
-        f"[bg][src]overlay=x=(W-w)/2:y=250:format=auto[v]"
-    )
+    if source_images:
+        source_image = source_images[(scene_index - 1) % len(source_images)]
+
+        filter_complex = (
+            f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={WIDTH}:{HEIGHT},eq=brightness=-0.12:saturation=1.08,"
+            f"fps={FPS},setsar=1[bg];"
+            f"[1:v]scale=920:980:force_original_aspect_ratio=decrease,format=rgba[src];"
+            f"[bg][src]overlay=x=(W-w)/2:y=250:format=auto[v]"
+        )
+
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                str(seek),
+                "-stream_loop",
+                "-1",
+                "-t",
+                str(scene_duration),
+                "-i",
+                str(gameplay_path),
+                "-loop",
+                "1",
+                "-t",
+                str(scene_duration),
+                "-i",
+                str(source_image),
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[v]",
+                "-t",
+                str(scene_duration),
+                "-r",
+                str(FPS),
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
+                str(output_path),
+            ],
+            f"Render scene {scene_index} visual with source image",
+        )
+
+        return output_path
 
     run(
         [
@@ -634,16 +685,8 @@ def render_scene(scene, scene_index, gameplay_path, source_images, output_path, 
             str(scene_duration),
             "-i",
             str(gameplay_path),
-            "-loop",
-            "1",
-            "-t",
-            str(scene_duration),
-            "-i",
-            str(source_image),
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[v]",
+            "-vf",
+            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},eq=brightness=-0.12:saturation=1.08,fps={FPS},setsar=1",
             "-t",
             str(scene_duration),
             "-r",
@@ -659,7 +702,7 @@ def render_scene(scene, scene_index, gameplay_path, source_images, output_path, 
             "yuv420p",
             str(output_path),
         ],
-        f"Render scene {scene_index} visual no overlay",
+        f"Render scene {scene_index} gameplay only no scene card",
     )
 
     return output_path
