@@ -856,7 +856,45 @@ def fit_audio_to_target(input_audio_path, output_audio_path, target_duration, ta
         raise RuntimeError("TTS audio duration invalid")
 
     if abs(current_duration - target_duration) <= 0.35:
-           speed = current_duration / target_duration
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(input_audio_path),
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                str(output_audio_path),
+            ],
+            "Normalize TTS audio without speed change",
+        )
+        return ffprobe_duration(output_audio_path)
+
+    if current_duration > target_duration:
+        speed = current_duration / target_duration
+        speed = max(1.0, min(speed, 1.12))
+
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(input_audio_path),
+                "-filter:a",
+                f"atempo={speed:.4f}",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                str(output_audio_path),
+            ],
+            "Fit longer TTS audio by slight speed-up",
+        )
+        return ffprobe_duration(output_audio_path)
+
+    speed = current_duration / target_duration
     speed = max(0.85, min(speed, 1.0))
 
     run(
@@ -876,43 +914,6 @@ def fit_audio_to_target(input_audio_path, output_audio_path, target_duration, ta
         "Fit shorter TTS audio by slight slow-down",
     )
     return ffprobe_duration(output_audio_path)
-    if current_duration > target_duration:
-        speed = current_duration / target_duration
-        speed = max(1.0, min(speed, 1.12))
-
-        run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(input_audio_path),
-                "-filter:a",
-                f"atempo={speed:.4f}",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "160k",
-                str(output_audio_path),
-            ],
-            "Fit TTS audio by slight speed-up",
-        )
-        return ffprobe_duration(output_audio_path)
-
-    run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(input_audio_path),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            str(output_audio_path),
-        ],
-        "Normalize shorter TTS audio",
-    )
-    return ffprobe_duration(output_audio_path)    
 def main():
     ensure_dirs()
 
