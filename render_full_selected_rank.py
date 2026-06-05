@@ -75,6 +75,36 @@ def clean_text(value):
 
 def short_text(value, limit=900):
     return clean_text(value)[:limit].rstrip()
+def word_count(text):
+    return len(clean_text(text).split())
+
+
+def build_continuous_voice_text(scenes, target_duration):
+    target_words = 150 if int(target_duration) >= 60 else 110
+
+    parts = []
+
+    for scene in scenes:
+        text = clean_text(scene.get("voiceOver"))
+        if text:
+            parts.append(text)
+
+    voice_text = clean_text(" ".join(parts))
+
+    if word_count(voice_text) < target_words:
+        topic_sentences = [
+            "This update matters because Roblox players and creators may feel the change directly inside the platform.",
+            "The key point is to understand what changed, why the community is reacting, and what could happen next.",
+            "Some players may see this as a useful improvement, while others may worry about how it affects creators or gameplay.",
+            "That is why this topic is worth watching until the end before making a final opinion."
+        ]
+
+        for sentence in topic_sentences:
+            if word_count(voice_text) >= target_words:
+                break
+            voice_text = clean_text(voice_text + " " + sentence)
+
+    return short_text(voice_text, 1400)    
 
 
 def run(cmd, label):
@@ -577,14 +607,10 @@ def prepare_scene_images(job, scenes):
     return prepared
 
 
-def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, output_path, job):
-    audio_duration = ffprobe_duration(audio_path)
+def render_scene(scene, scene_index, gameplay_path, source_images, output_path, job):
     scene_duration = max(min(float(scene["duration"]), 60.0), 2.5)
     seek = random_seek(gameplay_path, scene_duration, seed=scene_index * 999 + len(clean_text(job.get("topic"))))
     source_image = source_images[(scene_index - 1) % len(source_images)]
-
-    subtitle_png = TEMP_DIR / f"subtitle_{scene_index:02d}.png"
-    make_subtitle_overlay(subtitle_png, scene["title"], scene["voiceOver"])
 
     video_no_audio = TEMP_DIR / f"scene_{scene_index:02d}_video.mp4"
 
@@ -593,8 +619,7 @@ def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, o
         f"crop={WIDTH}:{HEIGHT},eq=brightness=-0.12:saturation=1.08,"
         f"fps={FPS},setsar=1[bg];"
         f"[1:v]scale=920:980:force_original_aspect_ratio=decrease,format=rgba[src];"
-        f"[bg][src]overlay=x=(W-w)/2:y=250:format=auto[tmp1];"
-        f"[tmp1][2:v]overlay=x=0:y=0:format=auto[v]"
+        f"[bg][src]overlay=x=(W-w)/2:y=250:format=auto[v]"
     )
 
     run(
@@ -615,12 +640,6 @@ def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, o
             str(scene_duration),
             "-i",
             str(source_image),
-            "-loop",
-            "1",
-            "-t",
-            str(scene_duration),
-            "-i",
-            str(subtitle_png),
             "-filter_complex",
             filter_complex,
             "-map",
@@ -638,36 +657,9 @@ def render_scene(scene, scene_index, gameplay_path, source_images, audio_path, o
             "23",
             "-pix_fmt",
             "yuv420p",
-            str(video_no_audio),
-        ],
-        f"Render scene {scene_index} visual",
-    )
-
-    run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(video_no_audio),
-            "-i",
-            str(audio_path),
-            "-filter_complex",
-            "[1:a]apad[a]",
-            "-map",
-            "0:v:0",
-            "-map",
-            "[a]",
-            "-t",
-            str(scene_duration),
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
             str(output_path),
         ],
-        f"Merge scene {scene_index} voice duration locked",
+        f"Render scene {scene_index} visual no overlay",
     )
 
     return output_path
@@ -695,6 +687,41 @@ def concat_scenes(scene_files, output_path):
         ],
         "Concat final video",
     )
+def merge_final_voice(video_path, audio_path, output_path, target_duration):
+    temp_voiced = output_path.with_name(output_path.stem + "_with_continuous_voice.mp4")
+    target_duration = int(target_duration)
+
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_path),
+            "-i",
+            str(audio_path),
+            "-filter_complex",
+            "[1:a]apad[a]",
+            "-map",
+            "0:v:0",
+            "-map",
+            "[a]",
+            "-t",
+            str(target_duration),
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            str(temp_voiced),
+        ],
+        "Merge continuous voice to final video",
+    )
+
+    if not temp_voiced.exists() or temp_voiced.stat().st_size < 100_000:
+        raise RuntimeError("Continuous voice output invalid")
+
+    temp_voiced.replace(output_path)    
 def main():
     ensure_dirs()
 
@@ -740,39 +767,41 @@ def main():
 
     scene_outputs = []
 
-    for index, scene in enumerate(scenes, start=1):
-        audio_path = AUDIO_DIR / f"scene_{index:02d}.mp3"
+    continuous_voice_original = build_continuous_voice_text(scenes, target_duration)
+    continuous_voice_text = translate_for_language(
+        continuous_voice_original,
+        voice_settings["target_code"]
+    )
 
-        original_voice_text = scene["voiceOver"]
-        voice_text = translate_for_language(
-            original_voice_text,
-            voice_settings["target_code"]
+    continuous_audio_path = AUDIO_DIR / "continuous_voice.mp3"
+
+    print("Continuous VO original:", continuous_voice_original)
+    print("Continuous VO final:", continuous_voice_text)
+    print("Continuous VO words:", word_count(continuous_voice_text))
+
+    asyncio.run(
+        generate_tts(
+            continuous_voice_text,
+            continuous_audio_path,
+            voice=voice_settings["voice"],
+            rate=voice_settings["rate"],
+            pitch=voice_settings["pitch"],
         )
+    )
 
-        scene["voiceOver"] = voice_text
+    for index, scene in enumerate(scenes, start=1):
+        gameplay = pick_gameplay(gameplays, index - 1)
+        out = TEMP_DIR / f"scene_{index:02d}_visual_only.mp4"
 
         print("Scene:", index)
         print("Title:", scene["title"])
-        print("VO original:", original_voice_text)
-        print("VO final:", voice_text)
+        print("Scene duration:", scene["duration"])
 
-        asyncio.run(
-            generate_tts(
-                voice_text,
-                audio_path,
-                voice=voice_settings["voice"],
-                rate=voice_settings["rate"],
-                pitch=voice_settings["pitch"],
-            )
-        )
-
-        gameplay = pick_gameplay(gameplays, index - 1)
-        out = TEMP_DIR / f"scene_{index:02d}_with_voice.mp4"
-
-        render_scene(scene, index, gameplay, scene_images[index - 1], audio_path, out, job)
+        render_scene(scene, index, gameplay, scene_images[index - 1], out, job)
         scene_outputs.append(out)
 
     concat_scenes(scene_outputs, output_path)
+    merge_final_voice(output_path, continuous_audio_path, output_path, target_duration)
     force_final_duration(output_path, output_path, target_duration)
 
     actual_duration = ffprobe_duration(output_path)
