@@ -457,42 +457,37 @@ def parse_target_video_duration(job):
 
 
 def get_scene_duration_plan(target_duration):
-    return SCENE_DURATION_PLANS.get(int(target_duration), SCENE_DURATION_PLANS[50])
+    return SCENE_DURATION_PLANS.get(int(target_duration), SCENE_DURATION_PLANS[45])
 
 
 def force_final_duration(input_path, output_path, target_duration):
     temp_locked = output_path.with_name(output_path.stem + "_duration_locked.mp4")
     target_duration = int(target_duration)
-
     run(
         [
             "ffmpeg",
             "-y",
             "-i",
-            str(input_path),
+            str(video_no_audio),
+            "-i",
+            str(audio_path),
             "-filter_complex",
-            f"[0:v]tpad=stop_mode=clone:stop_duration={target_duration},setpts=PTS-STARTPTS[v];[0:a]apad[a]",
+            "[1:a]apad[a]",
             "-map",
-            "[v]",
+            "0:v:0",
             "-map",
             "[a]",
             "-t",
-            str(target_duration),
+            str(scene_duration),
             "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
+            "copy",
             "-c:a",
             "aac",
             "-b:a",
             "160k",
-            "-movflags",
-            "+faststart",
-            str(temp_locked),
+            str(output_path),
         ],
-        "Force exact final duration lock",
+        f"Merge scene {scene_index} voice duration locked",
     )
 
     if not temp_locked.exists() or temp_locked.stat().st_size < 100_000:
